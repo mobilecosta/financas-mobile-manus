@@ -1,0 +1,174 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+enum Role {
+  user
+  admin
+}
+
+enum TipoCategoria {
+  receita
+  despesa
+  ambos
+}
+
+enum TipoConta {
+  corrente
+  poupanca
+  investimento
+  cartao_credito
+  outro
+}
+
+enum TipoTransacao {
+  receita
+  despesa
+}
+
+enum StatusTransacao {
+  pendente
+  confirmado
+  cancelado
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+model User {
+  id            Int       @id @default(autoincrement())
+  openId        String    @unique @db.VarChar(255)
+  name          String?   @db.Text
+  email         String?   @db.VarChar(320)
+  loginMethod   String?   @db.VarChar(64)
+  role          Role      @default(user)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+  lastSignedIn  DateTime  @default(now())
+
+  // Relations
+  empresas      Empresa[]
+  transacoes    Transacao[]
+
+  @@map("users")
+}
+
+// ─── Empresas (Tenants) ────────────────────────────────────────────────────────
+model Empresa {
+  id                    Int       @id @default(autoincrement())
+  nome                  String    @db.VarChar(255)
+  cnpj                  String?   @db.VarChar(18)
+  email                 String?   @db.VarChar(320)
+  telefone              String?   @db.VarChar(20)
+  moeda                 String    @default("BRL") @db.VarChar(3)
+  fusoHorario           String    @default("America/Sao_Paulo") @db.VarChar(64)
+  limiteGastosMensal    Decimal?
+  ownerId               Int
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @default(now()) @updatedAt
+
+  // Relations
+  owner                 User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  categorias            Categoria[]
+  contas                Conta[]
+  clientes              Cliente[]
+  transacoes            Transacao[]
+
+  @@map("empresas")
+}
+
+// ─── Categorias ────────────────────────────────────────────────────────────────
+model Categoria {
+  id            Int       @id @default(autoincrement())
+  empresaId     Int
+  nome          String    @db.VarChar(100)
+  tipo          TipoCategoria @default(ambos)
+  cor           String    @default("#DC2626") @db.VarChar(7)
+  icone         String?   @db.VarChar(50)
+  ativo         Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+
+  // Relations
+  empresa       Empresa   @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  transacoes    Transacao[]
+
+  @@map("categorias")
+}
+
+// ─── Contas Bancárias ──────────────────────────────────────────────────────────
+model Conta {
+  id            Int       @id @default(autoincrement())
+  empresaId     Int
+  nome          String    @db.VarChar(100)
+  tipo          TipoConta @default(corrente)
+  banco         String?   @db.VarChar(100)
+  agencia       String?   @db.VarChar(20)
+  numeroConta   String?   @db.VarChar(30)
+  saldoInicial  Decimal   @default(0)
+  cor           String    @default("#1a1a1a") @db.VarChar(7)
+  ativo         Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  // Relations
+  empresa       Empresa   @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  transacoes    Transacao[]
+
+  @@map("contas")
+}
+
+// ─── Clientes ──────────────────────────────────────────────────────────────────
+model Cliente {
+  id            Int       @id @default(autoincrement())
+  empresaId     Int
+  nome          String    @db.VarChar(255)
+  email         String?   @db.VarChar(320)
+  telefone      String?   @db.VarChar(20)
+  cpfCnpj       String?   @db.VarChar(18)
+  endereco      String?   @db.Text
+  observacoes   String?   @db.Text
+  ativo         Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  // Relations
+  empresa       Empresa   @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  transacoes    Transacao[]
+
+  @@map("clientes")
+}
+
+// ─── Transações ────────────────────────────────────────────────────────────────
+model Transacao {
+  id              Int       @id @default(autoincrement())
+  empresaId       Int
+  userId          Int
+  contaId         Int?
+  categoriaId     Int?
+  clienteId       Int?
+  descricao       String    @db.VarChar(500)
+  valor           Decimal
+  tipo            TipoTransacao
+  status          StatusTransacao @default(confirmado)
+  data            DateTime  @db.Date
+  dataVencimento  DateTime? @db.Date
+  observacoes     String?   @db.Text
+  recorrente      Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+
+  // Relations
+  empresa         Empresa   @relation(fields: [empresaId], references: [id], onDelete: Cascade)
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conta           Conta?    @relation(fields: [contaId], references: [id], onDelete: SetNull)
+  categoria       Categoria? @relation(fields: [categoriaId], references: [id], onDelete: SetNull)
+  cliente         Cliente?  @relation(fields: [clienteId], references: [id], onDelete: SetNull)
+
+  @@map("transacoes")
+}
