@@ -1,5 +1,6 @@
 import { and, desc, eq, sql, sum } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import {
   Categoria,
   Cliente,
@@ -26,7 +27,8 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      const queryClient = postgres(process.env.DATABASE_URL);
+      _db = drizzle(queryClient);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
@@ -40,30 +42,27 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");
   const db = await getDb();
   if (!db) return;
-  const values: InsertUser = { openId: user.openId };
-  const updateSet: Record<string, unknown> = {};
-  const textFields = ["name", "email", "loginMethod"] as const;
-  textFields.forEach((field) => {
-    const value = user[field];
-    if (value === undefined) return;
-    const normalized = value ?? null;
-    values[field] = normalized;
-    updateSet[field] = normalized;
+  
+  const values: InsertUser = { 
+    openId: user.openId,
+    name: user.name ?? null,
+    email: user.email ?? null,
+    loginMethod: user.loginMethod ?? null,
+    lastSignedIn: user.lastSignedIn ?? new Date(),
+    role: user.role ?? (user.openId === ENV.ownerOpenId ? "admin" : "user")
+  };
+
+  await db.insert(users).values(values).onConflictDoUpdate({
+    target: users.openId,
+    set: {
+      name: values.name,
+      email: values.email,
+      loginMethod: values.loginMethod,
+      lastSignedIn: values.lastSignedIn,
+      role: values.role,
+      updatedAt: new Date()
+    }
   });
-  if (user.lastSignedIn !== undefined) {
-    values.lastSignedIn = user.lastSignedIn;
-    updateSet.lastSignedIn = user.lastSignedIn;
-  }
-  if (user.role !== undefined) {
-    values.role = user.role;
-    updateSet.role = user.role;
-  } else if (user.openId === ENV.ownerOpenId) {
-    values.role = "admin";
-    updateSet.role = "admin";
-  }
-  if (!values.lastSignedIn) values.lastSignedIn = new Date();
-  if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
-  await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
 }
 
 export async function getUserByOpenId(openId: string) {
@@ -84,14 +83,14 @@ export async function getEmpresaByOwner(ownerId: number): Promise<Empresa | unde
 export async function createEmpresa(data: InsertEmpresa): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const result = await db.insert(empresas).values(data);
-  return Number((result as any)[0]?.insertId ?? 0);
+  const result = await db.insert(empresas).values(data).returning({ id: empresas.id });
+  return result[0].id;
 }
 
 export async function updateEmpresa(id: number, data: Partial<InsertEmpresa>): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  await db.update(empresas).set(data).where(eq(empresas.id, id));
+  await db.update(empresas).set({ ...data, updatedAt: new Date() }).where(eq(empresas.id, id));
 }
 
 // ─── Categorias ───────────────────────────────────────────────────────────────
@@ -104,8 +103,8 @@ export async function getCategoriasByEmpresa(empresaId: number): Promise<Categor
 export async function createCategoria(data: InsertCategoria): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const result = await db.insert(categorias).values(data);
-  return Number((result as any)[0]?.insertId ?? 0);
+  const result = await db.insert(categorias).values(data).returning({ id: categorias.id });
+  return result[0].id;
 }
 
 export async function updateCategoria(id: number, empresaId: number, data: Partial<InsertCategoria>): Promise<void> {
@@ -130,20 +129,20 @@ export async function getContasByEmpresa(empresaId: number): Promise<Conta[]> {
 export async function createConta(data: InsertConta): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const result = await db.insert(contas).values(data);
-  return Number((result as any)[0]?.insertId ?? 0);
+  const result = await db.insert(contas).values(data).returning({ id: contas.id });
+  return result[0].id;
 }
 
 export async function updateConta(id: number, empresaId: number, data: Partial<InsertConta>): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  await db.update(contas).set(data).where(and(eq(contas.id, id), eq(contas.empresaId, empresaId)));
+  await db.update(contas).set({ ...data, updatedAt: new Date() }).where(and(eq(contas.id, id), eq(contas.empresaId, empresaId)));
 }
 
 export async function deleteConta(id: number, empresaId: number): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  await db.update(contas).set({ ativo: false }).where(and(eq(contas.id, id), eq(contas.empresaId, empresaId)));
+  await db.update(contas).set({ ativo: false, updatedAt: new Date() }).where(and(eq(contas.id, id), eq(contas.empresaId, empresaId)));
 }
 
 // ─── Clientes ─────────────────────────────────────────────────────────────────
@@ -156,20 +155,20 @@ export async function getClientesByEmpresa(empresaId: number): Promise<Cliente[]
 export async function createCliente(data: InsertCliente): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const result = await db.insert(clientes).values(data);
-  return Number((result as any)[0]?.insertId ?? 0);
+  const result = await db.insert(clientes).values(data).returning({ id: clientes.id });
+  return result[0].id;
 }
 
 export async function updateCliente(id: number, empresaId: number, data: Partial<InsertCliente>): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  await db.update(clientes).set(data).where(and(eq(clientes.id, id), eq(clientes.empresaId, empresaId)));
+  await db.update(clientes).set({ ...data, updatedAt: new Date() }).where(and(eq(clientes.id, id), eq(clientes.empresaId, empresaId)));
 }
 
 export async function deleteCliente(id: number, empresaId: number): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  await db.update(clientes).set({ ativo: false }).where(and(eq(clientes.id, id), eq(clientes.empresaId, empresaId)));
+  await db.update(clientes).set({ ativo: false, updatedAt: new Date() }).where(and(eq(clientes.id, id), eq(clientes.empresaId, empresaId)));
 }
 
 // ─── Transações ───────────────────────────────────────────────────────────────
@@ -195,8 +194,9 @@ export async function getTransacoesByEmpresa(
   if (filters?.contaId) conditions.push(eq(transacoes.contaId, filters.contaId));
   if (filters?.clienteId) conditions.push(eq(transacoes.clienteId, filters.clienteId));
   if (filters?.status) conditions.push(eq(transacoes.status, filters.status));
-    if (filters?.dataInicio) conditions.push(sql`${transacoes.data} >= ${filters.dataInicio}`);
-    if (filters?.dataFim) conditions.push(sql`${transacoes.data} <= ${filters.dataFim}`);
+  if (filters?.dataInicio) conditions.push(sql`${transacoes.data} >= ${filters.dataInicio}`);
+  if (filters?.dataFim) conditions.push(sql`${transacoes.data} <= ${filters.dataFim}`);
+  
   const query = db
     .select()
     .from(transacoes)
@@ -227,8 +227,8 @@ export async function countTransacoesByEmpresa(
 export async function createTransacao(data: InsertTransacao): Promise<number> {
   const db = await getDb();
   if (!db) throw new Error("DB not available");
-  const result = await db.insert(transacoes).values(data);
-  return Number((result as any)[0]?.insertId ?? 0);
+  const result = await db.insert(transacoes).values(data).returning({ id: transacoes.id });
+  return result[0].id;
 }
 
 export async function updateTransacao(id: number, empresaId: number, data: Partial<InsertTransacao>): Promise<void> {
@@ -279,14 +279,14 @@ export async function getMonthlyEvolution(empresaId: number, months = 6) {
   if (!db) return [];
   const result = await db
     .select({
-      mes: sql<string>`DATE_FORMAT(data, '%Y-%m')`,
+      mes: sql<string>`to_char(data, 'YYYY-MM')`,
       tipo: transacoes.tipo,
       total: sum(transacoes.valor),
     })
     .from(transacoes)
-    .where(and(eq(transacoes.empresaId, empresaId), eq(transacoes.status, "confirmado"), sql`${transacoes.data} >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL ${months} MONTH), '%Y-%m-01')`))
-    .groupBy(sql`DATE_FORMAT(data, '%Y-%m')`, transacoes.tipo)
-    .orderBy(sql`DATE_FORMAT(data, '%Y-%m')`);
+    .where(and(eq(transacoes.empresaId, empresaId), eq(transacoes.status, "confirmado"), sql`${transacoes.data} >= date_trunc('month', now() - interval '${months} months')`))
+    .groupBy(sql`to_char(data, 'YYYY-MM')`, transacoes.tipo)
+    .orderBy(sql`to_char(data, 'YYYY-MM')`);
   return result;
 }
 

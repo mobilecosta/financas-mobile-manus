@@ -1,7 +1,7 @@
-import { getLoginUrl } from "@/const";
 import { trpc } from "@/lib/trpc";
-import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+import { supabase } from "@/lib/supabase";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
@@ -9,72 +9,78 @@ type UseAuthOptions = {
 };
 
 export function useAuth(options?: UseAuthOptions) {
-  const { redirectOnUnauthenticated = false, redirectPath = getLoginUrl() } =
+  const { redirectOnUnauthenticated = false, redirectPath = "/login" } =
     options ?? {};
   const utils = trpc.useUtils();
+  const [supabaseUser, setSupabaseUser] = useState<any>(null);
+  const [isSupabaseLoading, setIsSupabaseLoading] = useState(true);
+
+  // Sincronizar sessão do Supabase com o cookie do servidor
+  useEffect(() => {
+    const syncSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
+        setSupabaseUser(session.user);
+        // Definir cookie para o servidor tRPC
+        document.cookie = `${COOKIE_NAME}=${session.access_token}; path=/; max-age=${ONE_YEAR_MS / 1000}; SameSite=None; Secure`;
+      } else {
+        setSupabaseUser(null);
+        document.cookie = `${COOKIE_NAME}=; path=/; max-age=-1; SameSite=None; Secure`;
+      }
+      setIsSupabaseLoading(false);
+    };
+
+    syncSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session) {
+        setSupabaseUser(session.user);
+        document.cookie = `${COOKIE_NAME}=${session.access_token}; path=/; max-age=${ONE_YEAR_MS / 1000}; SameSite=None; Secure`;
+      } else {
+        setSupabaseUser(null);
+        document.cookie = `${COOKIE_NAME}=; path=/; max-age=-1; SameSite=None; Secure`;
+      }
+      utils.auth.me.invalidate();
+    });
+
+    return () => subscription.unsubscribe();
+  }, [utils]);
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
     retry: false,
     refetchOnWindowFocus: false,
-  });
-
-  const logoutMutation = trpc.auth.logout.useMutation({
-    onSuccess: () => {
-      utils.auth.me.setData(undefined, null);
-    },
+    enabled: !!supabaseUser,
   });
 
   const logout = useCallback(async () => {
-    try {
-      await logoutMutation.mutateAsync();
-    } catch (error: unknown) {
-      if (
-        error instanceof TRPCClientError &&
-        error.data?.code === "UNAUTHORIZED"
-      ) {
-        return;
-      }
-      throw error;
-    } finally {
-      utils.auth.me.setData(undefined, null);
-      await utils.auth.me.invalidate();
-    }
-  }, [logoutMutation, utils]);
+    await supabase.auth.signOut();
+    document.cookie = `${COOKIE_NAME}=; path=/; max-age=-1; SameSite=None; Secure`;
+    utils.auth.me.setData(undefined, null);
+    await utils.auth.me.invalidate();
+  }, [utils]);
 
   const state = useMemo(() => {
-    localStorage.setItem(
-      "manus-runtime-user-info",
-      JSON.stringify(meQuery.data)
-    );
+    const user = meQuery.data ?? null;
+    if (user) {
+      localStorage.setItem("manus-runtime-user-info", JSON.stringify(user));
+    }
     return {
-      user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
-      error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
+      user,
+      loading: isSupabaseLoading || meQuery.isLoading,
+      error: meQuery.error ?? null,
+      isAuthenticated: Boolean(supabaseUser && meQuery.data),
     };
-  }, [
-    meQuery.data,
-    meQuery.error,
-    meQuery.isLoading,
-    logoutMutation.error,
-    logoutMutation.isPending,
-  ]);
+  }, [meQuery.data, meQuery.error, meQuery.isLoading, isSupabaseLoading, supabaseUser]);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;
-    if (meQuery.isLoading || logoutMutation.isPending) return;
+    if (state.loading) return;
     if (state.user) return;
     if (typeof window === "undefined") return;
     if (window.location.pathname === redirectPath) return;
 
-    window.location.href = redirectPath
-  }, [
-    redirectOnUnauthenticated,
-    redirectPath,
-    logoutMutation.isPending,
-    meQuery.isLoading,
-    state.user,
-  ]);
+    window.location.href = redirectPath;
+  }, [redirectOnUnauthenticated, redirectPath, state.loading, state.user]);
 
   return {
     ...state,
